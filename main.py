@@ -1,257 +1,226 @@
-from fastapi import FastAPI, Path, Query
+from fastapi import FastAPI, Path, Depends
+from typing import List
 from datetime import datetime
-from typing import Dict, Union, Optional
-from pydantic import BaseModel
-import random
+from sqlalchemy.orm import Session
+
+from database import SessionLocal, engine
+import models
 
 app = FastAPI()
 
-# Student Data
-student_details: Dict[int, Dict[str, Union[str, datetime]]] = {
-    1: {
-        'name': 'John Doe',
-        'address': '123 Elm Street, Springfield',
-        'email': 'john.doe@example.com',
-        'phone': '+1234567890',
-        'enrollment_date': datetime(2022, 1, 15)
-    },
-    # Additional students...
-}
+# Initialize the database
+models.Base.metadata.create_all(bind=engine)
 
-# Staff Data
-staff_details: Dict[int, Dict[str, Union[str, datetime]]] = {
-    1: {
-        'name': 'Dr. Jane Smith',
-        'position': 'Professor',
-        'email': 'jane.smith@college.edu',
-        'phone': '+11234567890',
-        'hire_date': datetime(2015, 8, 23)
-    },
-    # Additional staff members...
-}
-
-# Course Data
-course_details: Dict[int, Dict[str, Union[str, datetime]]] = {
-    101: {
-        'title': 'Physics 101',
-        'description': 'Introduction to Physics',
-        'instructor': 'Dr. Jane Smith',
-        'start_date': datetime(2024, 9, 1)
-    },
-    # Additional courses...
-}
-
-# Book Data
-book_details: Dict[int, Dict[str, Union[str, datetime]]] = {
-    1001: {
-        'title': 'Quantum Mechanics',
-        'author': 'Richard Feynman',
-        'isbn': '978-0140176000',
-        'published_date': datetime(1994, 4, 15)
-    },
-    # Additional books...
-}
-
-# Pydantic Models
-class Student(BaseModel):
-    name: str
-    address: str
-    email: str
-    phone: str
-    enrollment_date: datetime
-
-class Staff(BaseModel):
-    name: str
-    position: str
-    email: str
-    phone: str
-    hire_date: datetime
-
-class Course(BaseModel):
-    title: str
-    description: str
-    instructor: str
-    start_date: datetime
-
-class Book(BaseModel):
-    title: str
-    author: str
-    isbn: str
-    published_date: datetime
-
-class UpdateStudent(BaseModel):
-    name: Optional[str] = None
-    address: Optional[str] = None
-    email: Optional[str] = None
-    phone: Optional[str] = None
-    enrollment_date: Optional[datetime] = None
-
-class UpdateStaff(BaseModel):
-    name: Optional[str] = None
-    position: Optional[str] = None
-    email: Optional[str] = None
-    phone: Optional[str] = None
-    hire_date: Optional[datetime] = None
-
-class UpdateCourse(BaseModel):
-    title: Optional[str] = None
-    description: Optional[str] = None
-    instructor: Optional[str] = None
-    start_date: Optional[datetime] = None
-
-class UpdateBook(BaseModel):
-    title: Optional[str] = None
-    author: Optional[str] = None
-    isbn: Optional[str] = None
-    published_date: Optional[datetime] = None
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
 
 # Health Check
 @app.get('/healthcheck')
-async def root():
-    return "Working"
+async def healthcheck():
+    return {"status": "Working"}
 
 # Random Number
 @app.get('/random')
-async def giveMeARandomNumber():
-    return random.randrange(100)
+async def random_number():
+    import random
+    return {"number": random.randrange(100)}
 
 # Student Endpoints
-@app.get('/student/{studentId}')
-async def getStudentById(studentId: int = Path(..., description="", gt=0)):
-    student = student_details.get(studentId)
+@app.get('/students', response_model=List[models.Student])
+async def get_all_students(db: Session = Depends(get_db)):
+    students = db.query(models.Student).all()
+    return students
+
+@app.get('/student/{studentId}', response_model=models.Student)
+async def get_student_by_id(studentId: int, db: Session = Depends(get_db)):
+    student = db.query(models.Student).filter(models.Student.id == studentId).first()
     if student:
         return student
     else:
         return {"error": "Student not found"}
 
-@app.get('/students')
-async def getAllStudents():
-    return {"data": student_details}
-
-@app.post('/student/{studentId}')
-async def createStudent(studentId: int, student: Student):
-    if studentId in student_details:
+@app.post('/student/{studentId}', response_model=models.Student)
+async def create_student(studentId: int, student: models.StudentCreate, db: Session = Depends(get_db)):
+    db_student = db.query(models.Student).filter(models.Student.id == studentId).first()
+    if db_student:
         return {"error": "Student with that ID already exists"}
-    student_details[studentId] = student.dict()
-    return student_details[studentId]
+    
+    new_student = models.Student(id=studentId, **student.dict())
+    db.add(new_student)
+    db.commit()
+    db.refresh(new_student)
+    return new_student
 
-@app.put('/student/{studentId}')
-async def updateStudent(studentId: int, student: UpdateStudent):
-    if studentId not in student_details:
-        return {"error": "Student with that ID does not exist"}
-    updated_student = student.dict(exclude_unset=True)
-    student_details[studentId].update(updated_student)
-    return student_details[studentId]
+@app.put('/student/{studentId}', response_model=models.Student)
+async def update_student(studentId: int, student: models.StudentUpdate, db: Session = Depends(get_db)):
+    db_student = db.query(models.Student).filter(models.Student.id == studentId).first()
+    if not db_student:
+        return {"error": "Student not found"}
+
+    for key, value in student.dict(exclude_unset=True).items():
+        setattr(db_student, key, value)
+    
+    db.commit()
+    db.refresh(db_student)
+    return db_student
 
 @app.delete('/student/{studentId}')
-async def deleteStudent(studentId: int):
-    if studentId not in student_details:
-        return {"error": "Student with that ID does not exist"}
-    student_details.pop(studentId)
+async def delete_student(studentId: int, db: Session = Depends(get_db)):
+    db_student = db.query(models.Student).filter(models.Student.id == studentId).first()
+    if not db_student:
+        return {"error": "Student not found"}
+
+    db.delete(db_student)
+    db.commit()
     return {"message": "Student deleted successfully"}
 
-# Staff Endpoints (Similar to Student)
-@app.get('/staff/{staffId}')
-async def getStaffById(staffId: int = Path(..., description="", gt=0)):
-    staff = staff_details.get(staffId)
+# Staff Endpoints
+@app.get('/staff', response_model=List[models.Staff])
+async def get_all_staff(db: Session = Depends(get_db)):
+    staff = db.query(models.Staff).all()
+    return staff
+
+@app.get('/staff/{staffId}', response_model=models.Staff)
+async def get_staff_by_id(staffId: int, db: Session = Depends(get_db)):
+    staff = db.query(models.Staff).filter(models.Staff.id == staffId).first()
     if staff:
         return staff
     else:
         return {"error": "Staff not found"}
 
-@app.get('/staff')
-async def getAllStaff():
-    return {"data": staff_details}
-
-@app.post('/staff/{staffId}')
-async def createStaff(staffId: int, staff: Staff):
-    if staffId in staff_details:
+@app.post('/staff/{staffId}', response_model=models.Staff)
+async def create_staff(staffId: int, staff: models.StaffCreate, db: Session = Depends(get_db)):
+    db_staff = db.query(models.Staff).filter(models.Staff.id == staffId).first()
+    if db_staff:
         return {"error": "Staff with that ID already exists"}
-    staff_details[staffId] = staff.dict()
-    return staff_details[staffId]
+    
+    new_staff = models.Staff(id=staffId, **staff.dict())
+    db.add(new_staff)
+    db.commit()
+    db.refresh(new_staff)
+    return new_staff
 
-@app.put('/staff/{staffId}')
-async def updateStaff(staffId: int, staff: UpdateStaff):
-    if staffId not in staff_details:
-        return {"error": "Staff with that ID does not exist"}
-    updated_staff = staff.dict(exclude_unset=True)
-    staff_details[staffId].update(updated_staff)
-    return staff_details[staffId]
+@app.put('/staff/{staffId}', response_model=models.Staff)
+async def update_staff(staffId: int, staff: models.StaffUpdate, db: Session = Depends(get_db)):
+    db_staff = db.query(models.Staff).filter(models.Staff.id == staffId).first()
+    if not db_staff:
+        return {"error": "Staff not found"}
+
+    for key, value in staff.dict(exclude_unset=True).items():
+        setattr(db_staff, key, value)
+    
+    db.commit()
+    db.refresh(db_staff)
+    return db_staff
 
 @app.delete('/staff/{staffId}')
-async def deleteStaff(staffId: int):
-    if staffId not in staff_details:
-        return {"error": "Staff with that ID does not exist"}
-    staff_details.pop(staffId)
+async def delete_staff(staffId: int, db: Session = Depends(get_db)):
+    db_staff = db.query(models.Staff).filter(models.Staff.id == staffId).first()
+    if not db_staff:
+        return {"error": "Staff not found"}
+
+    db.delete(db_staff)
+    db.commit()
     return {"message": "Staff deleted successfully"}
 
-# Course Endpoints (Similar to Student)
-@app.get('/course/{courseId}')
-async def getCourseById(courseId: int = Path(..., description="", gt=0)):
-    course = course_details.get(courseId)
+# Course Endpoints
+@app.get('/courses', response_model=List[models.Course])
+async def get_all_courses(db: Session = Depends(get_db)):
+    courses = db.query(models.Course).all()
+    return courses
+
+@app.get('/course/{courseId}', response_model=models.Course)
+async def get_course_by_id(courseId: int, db: Session = Depends(get_db)):
+    course = db.query(models.Course).filter(models.Course.id == courseId).first()
     if course:
         return course
     else:
         return {"error": "Course not found"}
 
-@app.get('/courses')
-async def getAllCourses():
-    return {"data": course_details}
-
-@app.post('/course/{courseId}')
-async def createCourse(courseId: int, course: Course):
-    if courseId in course_details:
+@app.post('/course/{courseId}', response_model=models.Course)
+async def create_course(courseId: int, course: models.CourseCreate, db: Session = Depends(get_db)):
+    db_course = db.query(models.Course).filter(models.Course.id == courseId).first()
+    if db_course:
         return {"error": "Course with that ID already exists"}
-    course_details[courseId] = course.dict()
-    return course_details[courseId]
+    
+    new_course = models.Course(id=courseId, **course.dict())
+    db.add(new_course)
+    db.commit()
+    db.refresh(new_course)
+    return new_course
 
-@app.put('/course/{courseId}')
-async def updateCourse(courseId: int, course: UpdateCourse):
-    if courseId not in course_details:
-        return {"error": "Course with that ID does not exist"}
-    updated_course = course.dict(exclude_unset=True)
-    course_details[courseId].update(updated_course)
-    return course_details[courseId]
+@app.put('/course/{courseId}', response_model=models.Course)
+async def update_course(courseId: int, course: models.CourseUpdate, db: Session = Depends(get_db)):
+    db_course = db.query(models.Course).filter(models.Course.id == courseId).first()
+    if not db_course:
+        return {"error": "Course not found"}
+
+    for key, value in course.dict(exclude_unset=True).items():
+        setattr(db_course, key, value)
+    
+    db.commit()
+    db.refresh(db_course)
+    return db_course
 
 @app.delete('/course/{courseId}')
-async def deleteCourse(courseId: int):
-    if courseId not in course_details:
-        return {"error": "Course with that ID does not exist"}
-    course_details.pop(courseId)
+async def delete_course(courseId: int, db: Session = Depends(get_db)):
+    db_course = db.query(models.Course).filter(models.Course.id == courseId).first()
+    if not db_course:
+        return {"error": "Course not found"}
+
+    db.delete(db_course)
+    db.commit()
     return {"message": "Course deleted successfully"}
 
-# Book Endpoints (Similar to Student)
-@app.get('/book/{bookId}')
-async def getBookById(bookId: int = Path(..., description="", gt=0)):
-    book = book_details.get(bookId)
+# Book Endpoints
+@app.get('/books', response_model=List[models.Book])
+async def get_all_books(db: Session = Depends(get_db)):
+    books = db.query(models.Book).all()
+    return books
+
+@app.get('/book/{bookId}', response_model=models.Book)
+async def get_book_by_id(bookId: int, db: Session = Depends(get_db)):
+    book = db.query(models.Book).filter(models.Book.id == bookId).first()
     if book:
         return book
     else:
         return {"error": "Book not found"}
 
-@app.get('/books')
-async def getAllBooks():
-    return {"data": book_details}
-
-@app.post('/book/{bookId}')
-async def createBook(bookId: int, book: Book):
-    if bookId in book_details:
+@app.post('/book/{bookId}', response_model=models.Book)
+async def create_book(bookId: int, book: models.BookCreate, db: Session = Depends(get_db)):
+    db_book = db.query(models.Book).filter(models.Book.id == bookId).first()
+    if db_book:
         return {"error": "Book with that ID already exists"}
-    book_details[bookId] = book.dict()
-    return book_details[bookId]
+    
+    new_book = models.Book(id=bookId, **book.dict())
+    db.add(new_book)
+    db.commit()
+    db.refresh(new_book)
+    return new_book
 
-@app.put('/book/{bookId}')
-async def updateBook(bookId: int, book: UpdateBook):
-    if bookId not in book_details:
-        return {"error": "Book with that ID does not exist"}
-    updated_book = book.dict(exclude_unset=True)
-    book_details[bookId].update(updated_book)
-    return book_details[bookId]
+@app.put('/book/{bookId}', response_model=models.Book)
+async def update_book(bookId: int, book: models.BookUpdate, db: Session = Depends(get_db)):
+    db_book = db.query(models.Book).filter(models.Book.id == bookId).first()
+    if not db_book:
+        return {"error": "Book not found"}
+
+    for key, value in book.dict(exclude_unset=True).items():
+        setattr(db_book, key, value)
+    
+    db.commit()
+    db.refresh(db_book)
+    return db_book
 
 @app.delete('/book/{bookId}')
-async def deleteBook(bookId: int):
-    if bookId not in book_details:
-        return {"error": "Book with that ID does not exist"}
-    book_details.pop(bookId)
-    return {"message": "Book deleted successfully"}
+async def delete_book(bookId: int, db: Session = Depends(get_db)):
+    db_book = db.query(models.Book).filter(models.Book.id == bookId).first()
+    if not db_book:
+        return {"error": "Book not found"}
 
+    db.delete(db_book)
+    db.commit()
+    return {"message": "Book deleted successfully"}
